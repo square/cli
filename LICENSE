@@ -1,0 +1,7 @@
+Copyright (c) [2026] [Block, Inc.]. All rights reserved.
+
+The Square CLI is proprietary software and your download, installation, and use of the Square CLI is subject to the Square Developer Terms of Service (https://squareup.com/us/en/legal/general/developers) (the "Developer Terms"). This repository does not contain the Square CLI source code, and no license to any source code is granted. Subject to the Developer Terms, Block grants you a limited, non-exclusive, non-transferable, revocable license to install and use the Square CLI in connection with Your Service. You may not copy (except as needed for that use), modify, distribute, sublicense, reverse engineer, decompile, or disassemble the Square CLI, except as permitted by applicable law. If this notice and the Developer Terms conflict, the Developer Terms control.
+
+The Square CLI is currently a beta product. In addition to the disclaimers in the Developer Terms, beta versions may contain errors, may change in ways that are not backward compatible, and are not covered by any support commitment.
+
+Third-party open-source components included in the Square CLI are licensed under their own terms, as identified in THIRD-PARTY-NOTICES. Nothing in this notice limits your rights under those licenses.
