@@ -16,14 +16,14 @@ you can pipe, filter, and hand to a model.
 Install from npm (requires [Node.js](https://nodejs.org/)):
 
 ```bash
-npm install -g @squareup/square-cli-public
+npm install -g @square/cli
 square --version
 ```
 
 Or run it without installing:
 
 ```bash
-npx -y @squareup/square-cli-public --help
+npx -y @square/cli --help
 ```
 
 ### Standalone binaries
