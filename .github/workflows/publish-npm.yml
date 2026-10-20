@@ -1,0 +1,70 @@
+# Publishes a square/cli release's binaries to npm: one @square/cli-<os>-<cpu>
+# package per binary, then @square/cli, which installs the matching one.
+# Authenticates with npm trusted publishing (OIDC); there is no npm token.
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.3.0
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+  # gh release verify-asset reads release attestations; needed while the repo is private.
+  attestations: read
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment to gate each publish.
+    environment: npm-publish
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Test packaging
+        run: node --test npm/build-packages.test.mjs
+
+      - name: Download and verify release assets
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'square-*' --pattern checksums.txt --pattern THIRD-PARTY-NOTICES.md
+          for f in assets/square-*; do
+            gh release verify-asset "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Build packages
+        run: node npm/build-packages.mjs "${TAG#v}" assets out > publish-order.txt
+
+      - name: Publish
+        run: |
+          version="${TAG#v}"
+          dist_tag=latest
+          case "$version" in *-*) dist_tag=next ;; esac
+          while read -r dir; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if [ -n "$(npm view "$name@$version" version 2>/dev/null)" ]; then
+              echo "$name@$version is already on npm; skipping"
+              continue
+            fi
+            npm publish "./$dir" --access public --tag "$dist_tag"
+          done < publish-order.txt
