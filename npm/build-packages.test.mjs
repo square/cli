@@ -9,13 +9,14 @@ import { test } from 'node:test';
 
 import { PLATFORMS, buildPackages } from './build-packages.mjs';
 
-// Fake release assets: each "binary" is a shell script that echoes its args
-// and exits 3, so the launcher can run it on any Unix host.
-function fakeRelease({ corrupt } = {}) {
+// Fake release assets: each "binary" is a shell script that prints a version
+// for --version and otherwise echoes its args and exits 3, so the launcher
+// and install script can run it on any Unix host.
+function fakeRelease({ corrupt, reportedVersion = '0.3.0' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'square-cli-assets-'));
   const lines = [];
   for (const { asset } of PLATFORMS) {
-    const body = `#!/bin/sh\necho "${asset} $*"\nexit 3\n`;
+    const body = `#!/bin/sh\n[ "$1" = --version ] && { echo ${reportedVersion}; exit 0; }\necho "${asset} $*"\nexit 3\n`;
     writeFileSync(path.join(dir, asset), body);
     const sum = createHash('sha256').update(corrupt === asset ? 'tampered' : body).digest('hex');
     lines.push(`${sum}  ${asset}`);
@@ -61,27 +62,58 @@ test('refuses a tag instead of a version', () => {
   assert.throws(() => buildPackages('v0.3.0', fakeRelease(), mkdtempSync(path.join(tmpdir(), 'x-'))), /not a release version/);
 });
 
-test('launcher runs the installed platform binary and passes through args and exit code', { skip: process.platform === 'win32' }, () => {
-  const out = mkdtempSync(path.join(tmpdir(), 'square-cli-npm-'));
-  const dirs = buildPackages('0.3.0', fakeRelease(), out);
-
-  // Lay the packages out the way npm installs them on this machine.
+// Lays the packages out the way npm installs them on this machine and returns
+// the installed @square/cli directory.
+function install(release, { withPlatformPackage = true } = {}) {
+  const dirs = buildPackages('0.3.0', release, mkdtempSync(path.join(tmpdir(), 'square-cli-npm-')));
   const nodeModules = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-install-')), 'node_modules');
   const host = `@square/cli-${process.platform}-${process.arch}`;
   for (const d of dirs) {
     const { name } = JSON.parse(readFileSync(path.join(d, 'package.json'), 'utf8'));
-    if (name === '@square/cli' || name === host) cpSync(d, path.join(nodeModules, name), { recursive: true });
+    if (name === '@square/cli' || (withPlatformPackage && name === host)) {
+      cpSync(d, path.join(nodeModules, name), { recursive: true });
+    }
   }
-  const launcher = path.join(nodeModules, '@square/cli/bin/square.js');
+  return path.join(nodeModules, '@square/cli');
+}
 
-  const run = spawnSync(process.execPath, [launcher, 'catalog', 'item list'], { encoding: 'utf8' });
+const unix = { skip: process.platform === 'win32' };
+
+test('launcher runs the installed platform binary and passes through args and exit code', unix, () => {
+  const cli = install(fakeRelease());
+  const run = spawnSync(process.execPath, [path.join(cli, 'bin/square.js'), 'catalog', 'item list'], { encoding: 'utf8' });
   assert.equal(run.status, 3);
   assert.match(run.stdout, / catalog item list\n$/);
+});
 
-  // Without the platform package (e.g. --omit=optional), fail with a fix.
-  const bare = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-bare-')), 'node_modules', '@square/cli');
-  cpSync(path.join(nodeModules, '@square/cli'), bare, { recursive: true });
-  const missing = spawnSync(process.execPath, [path.join(bare, 'bin/square.js')], { encoding: 'utf8' });
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /isn't installed.*npm install -g @square\/cli/s);
+test('launcher explains how to fix a missing platform package', unix, () => {
+  const cli = install(fakeRelease(), { withPlatformPackage: false });
+  const run = spawnSync(process.execPath, [path.join(cli, 'bin/square.js')], { encoding: 'utf8' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /isn't installed.*npm install -g @square\/cli/s);
+});
+
+function postinstall(cli, userAgent) {
+  const run = spawnSync(process.execPath, ['install.js'], {
+    cwd: cli,
+    env: { ...process.env, npm_config_user_agent: userAgent },
+  });
+  assert.equal(run.status, 0, 'postinstall must never fail the install');
+  return readFileSync(path.join(cli, 'bin/square.js'), 'utf8');
+}
+
+test('postinstall under npm swaps the launcher for the binary, which then runs directly', unix, () => {
+  const cli = install(fakeRelease());
+  const bin = postinstall(cli, 'npm/11.6.0 node/v24.10.0 darwin arm64');
+  assert.match(bin, /^#!\/bin\/sh/);
+  const run = spawnSync(path.join(cli, 'bin/square.js'), ['catalog', 'item list'], { encoding: 'utf8' });
+  assert.equal(run.status, 3);
+  assert.match(run.stdout, / catalog item list\n$/);
+});
+
+test('postinstall keeps the launcher for other package managers, wrong versions, and missing binaries', unix, () => {
+  const launcher = /^#!\/usr\/bin\/env node/;
+  assert.match(postinstall(install(fakeRelease()), 'pnpm/10.32.1 npm/? node/v24.10.0'), launcher);
+  assert.match(postinstall(install(fakeRelease({ reportedVersion: '9.9.9' })), 'npm/11.6.0'), launcher);
+  assert.match(postinstall(install(fakeRelease(), { withPlatformPackage: false }), 'npm/11.6.0'), launcher);
 });

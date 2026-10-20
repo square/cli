@@ -99,7 +99,8 @@ export function buildPackages(version, assetsDir, outDir) {
       description: 'The Square CLI: command-line access to Square APIs for developers and AI agents.',
       ...SHARED_FIELDS,
       bin: { square: 'bin/square.js' },
-      files: ['bin', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md'],
+      scripts: { postinstall: 'node install.js' },
+      files: ['bin', 'install.js', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md'],
       engines: { node: '>=18' },
       optionalDependencies: Object.fromEntries(PLATFORMS.map((p) => [platformPackageName(p), version])),
     },
@@ -108,6 +109,7 @@ export function buildPackages(version, assetsDir, outDir) {
   mkdirSync(path.join(mainDir, 'bin'));
   copyFileSync(path.join(repoRoot, 'npm', 'launcher', 'bin', 'square.js'), path.join(mainDir, 'bin', 'square.js'));
   chmodSync(path.join(mainDir, 'bin', 'square.js'), 0o755);
+  copyFileSync(path.join(repoRoot, 'npm', 'launcher', 'install.js'), path.join(mainDir, 'install.js'));
   dirs.push(mainDir);
 
   return dirs;
