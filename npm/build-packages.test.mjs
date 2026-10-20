@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -58,6 +58,13 @@ test('refuses a binary that does not match checksums.txt', () => {
   );
 });
 
+test('rebuilding into the same output directory works', () => {
+  const out = mkdtempSync(path.join(tmpdir(), 'square-cli-npm-'));
+  const release = fakeRelease();
+  buildPackages('0.3.0', release, out);
+  assert.equal(buildPackages('0.3.0', release, out).length, PLATFORMS.length + 1);
+});
+
 test('refuses a tag instead of a version', () => {
   assert.throws(() => buildPackages('v0.3.0', fakeRelease(), mkdtempSync(path.join(tmpdir(), 'x-'))), /not a release version/);
 });
@@ -93,6 +100,23 @@ test('launcher explains how to fix a missing platform package', unix, () => {
   assert.match(run.stderr, /isn't installed.*npm install -g @square\/cli/s);
 });
 
+test('launcher explains that musl Linux is unsupported instead of suggesting a reinstall', unix, () => {
+  const cli = install(fakeRelease(), { withPlatformPackage: false });
+  // Pretend to be x64 Linux whose libc is musl: Node reports no glibc version.
+  const stub = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-musl-')), 'musl.cjs');
+  writeFileSync(
+    stub,
+    `Object.defineProperty(process, 'platform', { value: 'linux' });
+Object.defineProperty(process, 'arch', { value: 'x64' });
+process.report.getReport = () => ({ header: {} });
+`,
+  );
+  const run = spawnSync(process.execPath, ['--require', stub, path.join(cli, 'bin/square.js')], { encoding: 'utf8' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /glibc only.*musl/s);
+  assert.doesNotMatch(run.stderr, /Reinstall/);
+});
+
 function postinstall(cli, userAgent) {
   const run = spawnSync(process.execPath, ['install.js'], {
     cwd: cli,
@@ -106,6 +130,9 @@ test('postinstall under npm swaps the launcher for the binary, which then runs d
   const cli = install(fakeRelease());
   const bin = postinstall(cli, 'npm/11.6.0 node/v24.10.0 darwin arm64');
   assert.match(bin, /^#!\/bin\/sh/);
+  // Running it again (e.g. npm rebuild) leaves nothing behind.
+  postinstall(cli, 'npm/11.6.0 node/v24.10.0 darwin arm64');
+  assert.deepEqual(readdirSync(path.join(cli, 'bin')), ['square.js']);
   const run = spawnSync(path.join(cli, 'bin/square.js'), ['catalog', 'item list'], { encoding: 'utf8' });
   assert.equal(run.status, 3);
   assert.match(run.stdout, / catalog item list\n$/);

@@ -35,6 +35,11 @@ function optimize() {
   if (check.status !== 0 || check.stdout.trim() !== version) return;
 
   const launcher = path.join(__dirname, 'bin', 'square.js');
+  // Already swapped (e.g. npm rebuild). Renaming a hard link onto another link
+  // to the same file is a no-op in POSIX, which would leave the temp file behind.
+  const [a, b] = [fs.statSync(launcher), fs.statSync(binary)];
+  if (a.ino === b.ino && a.dev === b.dev) return;
+
   const temp = `${launcher}.tmp-${process.pid}`;
   try {
     fs.linkSync(binary, temp);

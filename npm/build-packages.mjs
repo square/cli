@@ -84,7 +84,7 @@ export function buildPackages(version, assetsDir, outDir) {
       },
       legalFiles,
     );
-    mkdirSync(path.join(dir, 'bin'));
+    mkdirSync(path.join(dir, 'bin'), { recursive: true });
     verifiedCopy(assetsDir, platform.asset, checksums, path.join(dir, 'bin', binName));
     chmodSync(path.join(dir, 'bin', binName), 0o755);
     dirs.push(dir);
@@ -106,7 +106,7 @@ export function buildPackages(version, assetsDir, outDir) {
     },
     { ...legalFiles, 'README.md': path.join(repoRoot, 'README.md') },
   );
-  mkdirSync(path.join(mainDir, 'bin'));
+  mkdirSync(path.join(mainDir, 'bin'), { recursive: true });
   copyFileSync(path.join(repoRoot, 'npm', 'launcher', 'bin', 'square.js'), path.join(mainDir, 'bin', 'square.js'));
   chmodSync(path.join(mainDir, 'bin', 'square.js'), 0o755);
   copyFileSync(path.join(repoRoot, 'npm', 'launcher', 'install.js'), path.join(mainDir, 'install.js'));
