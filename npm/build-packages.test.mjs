@@ -100,10 +100,10 @@ test('launcher explains how to fix a missing platform package', unix, () => {
   assert.match(run.stderr, /isn't installed.*npm install -g @square\/cli/s);
 });
 
-test('launcher explains that musl Linux is unsupported instead of suggesting a reinstall', unix, () => {
+test('launcher explains that non-glibc Linux is unsupported instead of suggesting a reinstall', unix, () => {
   const cli = install(fakeRelease(), { withPlatformPackage: false });
-  // Pretend to be x64 Linux whose libc is musl: Node reports no glibc version.
-  const stub = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-musl-')), 'musl.cjs');
+  // Pretend to be x64 Linux without glibc (e.g. Alpine): Node reports no glibc version.
+  const stub = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-no-glibc-')), 'no-glibc.cjs');
   writeFileSync(
     stub,
     `Object.defineProperty(process, 'platform', { value: 'linux' });
@@ -113,7 +113,7 @@ process.report.getReport = () => ({ header: {} });
   );
   const run = spawnSync(process.execPath, ['--require', stub, path.join(cli, 'bin/square.js')], { encoding: 'utf8' });
   assert.equal(run.status, 1);
-  assert.match(run.stderr, /glibc only.*musl/s);
+  assert.match(run.stderr, /glibc only.*doesn't use glibc/s);
   assert.doesNotMatch(run.stderr, /Reinstall/);
 });
 

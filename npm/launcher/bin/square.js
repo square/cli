@@ -19,12 +19,13 @@ function fail(message) {
   process.exit(1);
 }
 
-// Linux builds are glibc-only. On musl (e.g. Alpine), npm skips the platform
-// package, and an older npm that installs it anyway can't run it.
-function failIfMusl() {
+// Linux builds are glibc-only. On other C libraries (e.g. musl on Alpine), npm
+// skips the platform package, and an older npm that installs it anyway can't
+// run it. Node reports glibcVersionRuntime only when it runs on glibc.
+function failIfNotGlibc() {
   if (process.platform === 'linux' && !process.report?.getReport().header.glibcVersionRuntime) {
     fail(
-      'the Square CLI publishes Linux builds for glibc only, and this system uses musl (for example, Alpine). ' +
+      "the Square CLI publishes Linux builds for glibc only, and this system doesn't use glibc (Alpine, for example, uses musl). " +
         'Use a glibc-based distribution or image, such as Debian or Ubuntu.',
     );
   }
@@ -43,7 +44,7 @@ try {
   const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
   binary = path.join(pkgDir, 'bin', process.platform === 'win32' ? 'square.exe' : 'square');
 } catch {
-  failIfMusl();
+  failIfNotGlibc();
   fail(
     `${pkg} isn't installed. npm skips it when optional dependencies are disabled ` +
       '(--omit=optional, --no-optional). Reinstall with: npm install -g @square/cli',
@@ -64,7 +65,7 @@ if (process.platform !== 'win32') {
 
 const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit' });
 if (result.error) {
-  failIfMusl();
+  failIfNotGlibc();
   fail(`couldn't run ${binary}: ${result.error.message}`);
 }
 if (result.signal) {
