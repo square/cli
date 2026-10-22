@@ -50,6 +50,36 @@ test('builds platform packages first, then @square/cli pinned to the same versio
   }
 });
 
+test('each package packs only its own files, and each platform package holds its own binary', () => {
+  // Written out by hand so a mix-up in PLATFORMS can't also hide here.
+  const expected = {
+    '@square/cli-darwin-arm64': ['square-darwin-arm64', 'bin/square'],
+    '@square/cli-darwin-x64': ['square-darwin-x64', 'bin/square'],
+    '@square/cli-linux-arm64': ['square-linux-arm64', 'bin/square'],
+    '@square/cli-linux-x64': ['square-linux-x64', 'bin/square'],
+    '@square/cli-win32-x64': ['square-windows-x64.exe', 'bin/square.exe'],
+  };
+  const legal = ['LICENSE', 'THIRD-PARTY-NOTICES.md', 'package.json'];
+  const release = fakeRelease();
+  const dirs = buildPackages('0.3.0', release, mkdtempSync(path.join(tmpdir(), 'square-cli-npm-')));
+  assert.equal(dirs.length, Object.keys(expected).length + 1);
+
+  for (const dir of dirs) {
+    const pack = spawnSync('npm', ['pack', '--dry-run', '--json', dir], { encoding: 'utf8', shell: process.platform === 'win32' });
+    assert.equal(pack.status, 0, pack.stderr);
+    const { name, files } = JSON.parse(pack.stdout)[0];
+    const paths = files.map((f) => f.path).sort();
+    if (name === '@square/cli') {
+      assert.deepEqual(paths, ['README.md', 'bin/square.js', 'install.js', ...legal].sort());
+      continue;
+    }
+    const [asset, binPath] = expected[name];
+    assert.deepEqual(paths, [binPath, ...legal].sort(), name);
+    assert.ok(files.find((f) => f.path === binPath).mode & 0o111, `${name}: ${binPath} must stay executable`);
+    assert.deepEqual(readFileSync(path.join(dir, binPath)), readFileSync(path.join(release, asset)), `${name} must ship ${asset}`);
+  }
+});
+
 test('refuses a binary that does not match checksums.txt', () => {
   const out = mkdtempSync(path.join(tmpdir(), 'square-cli-npm-'));
   assert.throws(
