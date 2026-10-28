@@ -30,13 +30,18 @@ npx -y @square/cli --help
 
 Prebuilt binaries for macOS, Linux, and Windows are attached to each
 [release](https://github.com/square/cli/releases). Download the one for your
-platform, verify it against `checksums.txt`, and put it on your `PATH`:
+platform, verify it against `checksums.txt`, and put it on your `PATH`. For
+example, on an Apple silicon Mac:
 
 ```bash
 shasum -a 256 --check --ignore-missing checksums.txt
 chmod +x square-darwin-arm64
+xattr -d com.apple.quarantine square-darwin-arm64   # only if you downloaded it in a browser
 mv square-darwin-arm64 /usr/local/bin/square
 ```
+
+Linux binaries need glibc (for example, Debian or Ubuntu). Alpine and other
+musl-based distributions aren't supported.
 
 If you redistribute a binary, include `THIRD-PARTY-NOTICES.md` from the same
 release.
@@ -50,12 +55,15 @@ square auth login
 square auth status
 ```
 
-For CI and other non-interactive environments, use an access token from the
-[Developer Console](https://developer.squareup.com/apps):
+If the CLI can't open a browser, run `square auth login --no-open` to print the
+authorization URL instead. Sign-in returns to `http://localhost:5000` on the
+machine running the CLI, so on a remote host, forward that port first
+(`ssh -L 5000:localhost:5000 HOST`) and open the URL in your local browser.
 
-```bash
-SQUARE_ACCESS_TOKEN=YOUR_SQUARE_ACCESS_TOKEN square catalog item list
-```
+The CLI doesn't accept access tokens. It ignores the `SQUARE_ACCESS_TOKEN`
+environment variable. To call Square from CI or a server with an access token,
+use the [Square API](https://developer.squareup.com/docs/build-basics/access-tokens)
+directly.
 
 See [Authentication](https://developer.squareup.com/docs/cli#authentication)
 for all options.
