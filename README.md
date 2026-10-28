@@ -30,7 +30,8 @@ npx -y @square/cli --help
 
 Prebuilt binaries for macOS, Linux, and Windows are attached to each
 [release](https://github.com/square/cli/releases). Download the one for your
-platform, verify it against `checksums.txt`, and put it on your `PATH`:
+platform, verify it against `checksums.txt`, and put it on your `PATH`. For
+example, on an Apple silicon Mac:
 
 ```bash
 shasum -a 256 --check --ignore-missing checksums.txt
