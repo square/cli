@@ -55,7 +55,9 @@ square auth status
 ```
 
 If the CLI can't open a browser, run `square auth login --no-open` to print the
-authorization URL instead.
+authorization URL instead. Sign-in returns to `http://localhost:5000` on the
+machine running the CLI, so on a remote host, forward that port first
+(`ssh -L 5000:localhost:5000 HOST`) and open the URL in your local browser.
 
 The CLI doesn't accept access tokens. It ignores the `SQUARE_ACCESS_TOKEN`
 environment variable. To call Square from CI or a server with an access token,
