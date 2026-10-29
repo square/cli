@@ -2,8 +2,9 @@
 // Runs the Square CLI binary that npm installed for this platform.
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { accessSync, chmodSync, constants } = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const PLATFORM_PACKAGES = {
@@ -58,17 +59,34 @@ if (process.platform !== 'win32') {
     try {
       chmodSync(binary, 0o755);
     } catch {
-      // Leave it to spawnSync to report the permission error.
+      // Leave it to spawn to report the permission error.
     }
   }
 }
 
-const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit' });
-if (result.error) {
+const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit' });
+
+// Pass termination signals on, so stopping this process (an agent's timeout,
+// a process manager, `kill <pid>`) also stops the binary instead of orphaning it.
+const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+for (const signal of FORWARDED_SIGNALS) {
+  process.on(signal, () => child.kill(signal));
+}
+
+child.on('error', (error) => {
   failIfNotGlibc();
-  fail(`couldn't run ${binary}: ${result.error.message}`);
-}
-if (result.signal) {
-  process.kill(process.pid, result.signal);
-}
-process.exit(result.status ?? 1);
+  fail(`couldn't run ${binary}: ${error.message}`);
+});
+child.on('exit', (code, signal) => {
+  if (signal) {
+    // Die from the same signal, so callers see how the binary ended. The
+    // signal can be ignored (Node ignores SIGPIPE, and Linux ignores
+    // default-action signals for PID 1 in a container), so fall back to the
+    // shell's 128 + signal number exit code rather than exiting 0.
+    process.exitCode = 128 + os.constants.signals[signal];
+    for (const s of FORWARDED_SIGNALS) process.removeAllListeners(s);
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 1);
+});
