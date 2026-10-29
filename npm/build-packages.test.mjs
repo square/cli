@@ -1,6 +1,7 @@
 // Run with: node --test npm/build-packages.test.mjs
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,13 +11,15 @@ import { test } from 'node:test';
 import { PLATFORMS, buildPackages } from './build-packages.mjs';
 
 // Fake release assets: each "binary" is a shell script that prints a version
-// for --version and otherwise echoes its args and exits 3, so the launcher
-// and install script can run it on any Unix host.
+// for --version, prints its PID and sleeps for `wait`, and otherwise echoes its
+// args and exits 3, so the launcher and install script can run it on any Unix host.
 function fakeRelease({ corrupt, reportedVersion = '0.3.0' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'square-cli-assets-'));
   const lines = [];
   for (const { asset } of PLATFORMS) {
-    const body = `#!/bin/sh\n[ "$1" = --version ] && { echo ${reportedVersion}; exit 0; }\necho "${asset} $*"\nexit 3\n`;
+    const body =
+      `#!/bin/sh\n[ "$1" = --version ] && { echo ${reportedVersion}; exit 0; }\n` +
+      `[ "$1" = wait ] && { echo $$; exec sleep 30; }\necho "${asset} $*"\nexit 3\n`;
     writeFileSync(path.join(dir, asset), body);
     const sum = createHash('sha256').update(corrupt === asset ? 'tampered' : body).digest('hex');
     lines.push(`${sum}  ${asset}`);
@@ -121,6 +124,23 @@ test('launcher runs the installed platform binary and passes through args and ex
   const run = spawnSync(process.execPath, [path.join(cli, 'bin/square.js'), 'catalog', 'item list'], { encoding: 'utf8' });
   assert.equal(run.status, 3);
   assert.match(run.stdout, / catalog item list\n$/);
+});
+
+test('stopping the launcher stops the binary instead of orphaning it', unix, async () => {
+  const cli = install(fakeRelease());
+  const launcher = spawn(process.execPath, [path.join(cli, 'bin/square.js'), 'wait'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const [line] = await once(launcher.stdout, 'data');
+  const binaryPid = Number(String(line).trim());
+  try {
+    launcher.kill('SIGTERM');
+    const [code, signal] = await once(launcher, 'exit');
+    assert.deepEqual({ code, signal }, { code: null, signal: 'SIGTERM' });
+    assert.throws(() => process.kill(binaryPid, 0), { code: 'ESRCH' }, 'the binary must not outlive the launcher');
+  } finally {
+    try {
+      process.kill(binaryPid, 'SIGKILL');
+    } catch {}
+  }
 });
 
 test('launcher explains how to fix a missing platform package', unix, () => {
