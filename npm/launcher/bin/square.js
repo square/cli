@@ -4,6 +4,7 @@
 
 const { spawn } = require('node:child_process');
 const { accessSync, chmodSync, constants } = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const PLATFORM_PACKAGES = {
@@ -78,7 +79,11 @@ child.on('error', (error) => {
 });
 child.on('exit', (code, signal) => {
   if (signal) {
-    // Die from the same signal, so callers see how the binary ended.
+    // Die from the same signal, so callers see how the binary ended. The
+    // signal can be ignored (Node ignores SIGPIPE, and Linux ignores
+    // default-action signals for PID 1 in a container), so fall back to the
+    // shell's 128 + signal number exit code rather than exiting 0.
+    process.exitCode = 128 + os.constants.signals[signal];
     for (const s of FORWARDED_SIGNALS) process.removeAllListeners(s);
     process.kill(process.pid, signal);
     return;

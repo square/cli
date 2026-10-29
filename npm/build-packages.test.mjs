@@ -11,15 +11,17 @@ import { test } from 'node:test';
 import { PLATFORMS, buildPackages } from './build-packages.mjs';
 
 // Fake release assets: each "binary" is a shell script that prints a version
-// for --version, prints its PID and sleeps for `wait`, and otherwise echoes its
-// args and exits 3, so the launcher and install script can run it on any Unix host.
+// for --version, prints its PID and sleeps for `wait`, kills itself for
+// `signal <NAME>`, and otherwise echoes its args and exits 3, so the launcher
+// and install script can run it on any Unix host.
 function fakeRelease({ corrupt, reportedVersion = '0.3.0' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'square-cli-assets-'));
   const lines = [];
   for (const { asset } of PLATFORMS) {
     const body =
       `#!/bin/sh\n[ "$1" = --version ] && { echo ${reportedVersion}; exit 0; }\n` +
-      `[ "$1" = wait ] && { echo $$; exec sleep 30; }\necho "${asset} $*"\nexit 3\n`;
+      `[ "$1" = wait ] && { echo $$; exec sleep 30; }\n[ "$1" = signal ] && kill -"$2" $$\n` +
+      `echo "${asset} $*"\nexit 3\n`;
     writeFileSync(path.join(dir, asset), body);
     const sum = createHash('sha256').update(corrupt === asset ? 'tampered' : body).digest('hex');
     lines.push(`${sum}  ${asset}`);
@@ -141,6 +143,19 @@ test('stopping the launcher stops the binary instead of orphaning it', unix, asy
       process.kill(binaryPid, 'SIGKILL');
     } catch {}
   }
+});
+
+test('a binary killed by a signal the launcher cannot die from still exits 128 + signal', unix, () => {
+  const cli = install(fakeRelease());
+  // Node ignores SIGPIPE, as when `square ... | head -1` closes the pipe early.
+  const pipe = spawnSync(process.execPath, [path.join(cli, 'bin/square.js'), 'signal', 'PIPE']);
+  assert.deepEqual({ status: pipe.status, signal: pipe.signal }, { status: 141, signal: null });
+
+  // As PID 1 in a container, Linux drops the launcher's signal to itself.
+  const stub = path.join(mkdtempSync(path.join(tmpdir(), 'square-cli-pid1-')), 'pid1.cjs');
+  writeFileSync(stub, `const kill = process.kill;\nprocess.kill = (pid, sig) => (pid === process.pid ? true : kill(pid, sig));\n`);
+  const term = spawnSync(process.execPath, ['--require', stub, path.join(cli, 'bin/square.js'), 'signal', 'TERM']);
+  assert.deepEqual({ status: term.status, signal: term.signal }, { status: 143, signal: null });
 });
 
 test('launcher explains how to fix a missing platform package', unix, () => {
