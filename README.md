@@ -46,6 +46,25 @@ musl-based distributions aren't supported.
 If you redistribute a binary, include `THIRD-PARTY-NOTICES.md` from the same
 release.
 
+### Updates
+
+Once a day, the CLI asks the npm registry (`registry.npmjs.org`) in the
+background whether a newer `@square/cli` release is out. The request sends no
+credentials or account data. When there's a newer version, commands you run in
+a terminal end with a notice that names the update step for how you installed
+the CLI:
+
+| Installed with | Update with |
+| --- | --- |
+| `npm install -g @square/cli` | `square --update` |
+| `npx -y @square/cli` | `npx -y @square/cli@latest` |
+| `pnpm add -g` or `bun add -g` | `pnpm add -g @square/cli@latest` or `bun add -g @square/cli@latest` |
+| A standalone binary | Download the [latest release](https://github.com/square/cli/releases/latest) |
+
+JSON and piped output never include the notice, so agents and scripts don't see
+it. To turn the check off, set `NO_UPDATE_NOTIFIER=1`. The CLI also skips it
+when `CI` is set.
+
 ## Authenticate
 
 Sign in with your Square account in the browser (OAuth with PKCE):
