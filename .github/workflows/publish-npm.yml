@@ -94,3 +94,50 @@ jobs:
             npm publish "./$dir" --access public --tag "$dist_tag"
           done 3< publish-order.txt
           exit "$failed"
+
+  # Announces a release's npm publish outcome. Posts to every webhook secret that
+  # is set; a missing secret is skipped, so this is safe before the webhooks exist.
+  #   SLACK_RELEASE_WEBHOOK_URL  Slack Workflow Builder webhook for the release channel
+  #   BUZZ_RELEASE_WEBHOOK_URL   optional second destination that accepts the same JSON
+  # Actions logs here are public: the payload carries only the version, outcome and
+  # links, and the webhook URLs are never echoed.
+  notify:
+    needs: publish
+    # Manual dispatches are dry runs or re-publishes of an announced release.
+    if: always() && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Post to webhooks
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          RESULT: ${{ needs.publish.result }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+          BUZZ_RELEASE_WEBHOOK_URL: ${{ secrets.BUZZ_RELEASE_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = success ]; then
+            status=success
+            text=":white_check_mark: Square CLI $TAG is out on GitHub and npm: <$RELEASE_URL|release notes>"
+          else
+            status=failure
+            text=":x: Square CLI $TAG npm publish ended with \`$RESULT\`. The GitHub release is up, npm may not be: <$RUN_URL|workflow run>"
+          fi
+          # Workflow Builder webhooks read the named fields; incoming webhooks read text.
+          payload=$(jq -n --arg text "$text" --arg version "${TAG#v}" --arg status "$status" \
+            --arg conclusion "$RESULT" --arg release_url "$RELEASE_URL" --arg run_url "$RUN_URL" \
+            '$ARGS.named')
+          posted=0
+          for name in SLACK_RELEASE_WEBHOOK_URL BUZZ_RELEASE_WEBHOOK_URL; do
+            url=${!name}
+            if [ -z "$url" ]; then
+              echo "$name is not set; skipping"
+              continue
+            fi
+            curl -sS --fail-with-body --retry 3 -o /dev/null -H 'Content-Type: application/json' -d "$payload" "$url"
+            echo "Posted to $name"
+            posted=1
+          done
+          [ "$posted" = 1 ] || echo "::warning::No release webhook secret is set; nothing was posted."
