@@ -105,6 +105,9 @@ jobs:
     if: always() && github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions: {}
+    # The job holds the workflow's concurrency slot, so a stalled webhook must not
+    # block the next publish.
+    timeout-minutes: 3
     steps:
       - name: Post to Slack
         env:
@@ -130,5 +133,5 @@ jobs:
           payload=$(jq -n --arg text "$text" --arg version "${TAG#v}" --arg status "$status" \
             --arg conclusion "$RESULT" --arg release_url "$RELEASE_URL" --arg run_url "$RUN_URL" \
             '$ARGS.named')
-          curl -sS --fail-with-body --retry 3 -o /dev/null -H 'Content-Type: application/json' \
-            -d "$payload" "$SLACK_RELEASE_WEBHOOK_URL"
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 20 --retry 3 --retry-max-time 60 \
+            -o /dev/null -H 'Content-Type: application/json' -d "$payload" "$SLACK_RELEASE_WEBHOOK_URL"
