@@ -94,3 +94,44 @@ jobs:
             npm publish "./$dir" --access public --tag "$dist_tag"
           done 3< publish-order.txt
           exit "$failed"
+
+  # Announces a release's npm publish outcome through the Slack Workflow Builder
+  # webhook in SLACK_RELEASE_WEBHOOK_URL. Without the secret it only warns, so this
+  # is safe before the webhook exists. Actions logs here are public: the payload
+  # carries only the version, outcome and links, and the webhook URL is never echoed.
+  notify:
+    needs: publish
+    # Manual dispatches are dry runs or re-publishes of an announced release.
+    if: always() && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions: {}
+    # The job holds the workflow's concurrency slot, so a stalled webhook must not
+    # block the next publish.
+    timeout-minutes: 3
+    steps:
+      - name: Post to Slack
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          RESULT: ${{ needs.publish.result }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SLACK_RELEASE_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_RELEASE_WEBHOOK_URL is not set; nothing was posted."
+            exit 0
+          fi
+          if [ "$RESULT" = success ]; then
+            status=success
+            text=":white_check_mark: Square CLI $TAG is out on GitHub and npm: <$RELEASE_URL|release notes>"
+          else
+            status=failure
+            text=":x: Square CLI $TAG npm publish ended with \`$RESULT\`. The GitHub release is up, npm may not be: <$RUN_URL|workflow run>"
+          fi
+          # Workflow Builder webhooks read the named fields; incoming webhooks read text.
+          payload=$(jq -n --arg text "$text" --arg version "${TAG#v}" --arg status "$status" \
+            --arg conclusion "$RESULT" --arg release_url "$RELEASE_URL" --arg run_url "$RUN_URL" \
+            '$ARGS.named')
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 20 --retry 3 --retry-max-time 60 \
+            -o /dev/null -H 'Content-Type: application/json' -d "$payload" "$SLACK_RELEASE_WEBHOOK_URL"
