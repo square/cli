@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     # Add required reviewers to this environment to gate each publish.
     environment: npm-publish
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # While the repo is private every run is a dry run, releases included, so
@@ -63,8 +65,10 @@ jobs:
         run: node npm/build-packages.mjs "${TAG#v}" assets out > publish-order.txt
 
       - name: Publish
+        id: publish
         run: |
           version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           dist_tag=latest
           case "$version" in *-*) dist_tag=next ;; esac
           if [ "$DRY_RUN" = true ]; then
@@ -95,12 +99,24 @@ jobs:
           done 3< publish-order.txt
           exit "$failed"
 
-  # Announces a release's npm publish outcome through the Slack Workflow Builder
-  # webhook in SLACK_RELEASE_WEBHOOK_URL. Without the secret it only warns, so this
-  # is safe before the webhook exists. Actions logs here are public: the payload
+  # Tests what users get from a release: the public downloads and
+  # `npm install -g @square/cli` on every platform.
+  smoke:
+    needs: publish
+    if: github.event_name == 'release'
+    # smoke.yml asks for contents: write, which it uses only for draft releases.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}
+      source: release
+
+  # Announces a release's npm publish and smoke outcome through the Slack Workflow
+  # Builder webhook in SLACK_RELEASE_WEBHOOK_URL. Without the secret it only warns. Actions logs here are public: the payload
   # carries only the version, outcome and links, and the webhook URL is never echoed.
   notify:
-    needs: publish
+    needs: [publish, smoke]
     # Manual dispatches are dry runs or re-publishes of an announced release.
     if: always() && github.event_name == 'release'
     runs-on: ubuntu-latest
@@ -112,7 +128,8 @@ jobs:
       - name: Post to Slack
         env:
           TAG: ${{ github.event.release.tag_name }}
-          RESULT: ${{ needs.publish.result }}
+          PUBLISH: ${{ needs.publish.result }}
+          SMOKE: ${{ needs.smoke.result }}
           RELEASE_URL: ${{ github.event.release.html_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
@@ -122,16 +139,19 @@ jobs:
             echo "::warning::SLACK_RELEASE_WEBHOOK_URL is not set; nothing was posted."
             exit 0
           fi
-          if [ "$RESULT" = success ]; then
-            status=success
-            text=":white_check_mark: Square CLI $TAG is out on GitHub and npm: <$RELEASE_URL|release notes>"
+          if [ "$PUBLISH" != success ]; then
+            status=failure result=$PUBLISH
+            text=":x: Square CLI $TAG npm publish ended with \`$PUBLISH\`. The GitHub release is up, npm may not be: <$RUN_URL|workflow run>"
+          elif [ "$SMOKE" != success ]; then
+            status=failure result=$SMOKE
+            text=":x: Square CLI $TAG is on npm, but the install smoke ended with \`$SMOKE\`. Some users may not be able to install or run it: <$RUN_URL|workflow run>"
           else
-            status=failure
-            text=":x: Square CLI $TAG npm publish ended with \`$RESULT\`. The GitHub release is up, npm may not be: <$RUN_URL|workflow run>"
+            status=success result=success
+            text=":white_check_mark: Square CLI $TAG is out on GitHub and npm and installs on every platform: <$RELEASE_URL|release notes>"
           fi
           # Workflow Builder webhooks read the named fields; incoming webhooks read text.
           payload=$(jq -n --arg text "$text" --arg version "${TAG#v}" --arg status "$status" \
-            --arg conclusion "$RESULT" --arg release_url "$RELEASE_URL" --arg run_url "$RUN_URL" \
+            --arg conclusion "$result" --arg release_url "$RELEASE_URL" --arg run_url "$RUN_URL" \
             '$ARGS.named')
           curl -sS --fail-with-body --connect-timeout 10 --max-time 20 --retry 3 --retry-max-time 60 \
             -o /dev/null -H 'Content-Type: application/json' -d "$payload" "$SLACK_RELEASE_WEBHOOK_URL"
