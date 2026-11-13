@@ -41,41 +41,12 @@ defaults:
     shell: bash
 
 jobs:
-  download:
-    runs-on: ubuntu-latest
-    # Draft releases are only visible to tokens with write access. This job runs
-    # only gh and curl; the jobs that run the binaries and npm code get no token
-    # scopes.
-    permissions:
-      contents: write
-    steps:
-      - name: Download
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euxo pipefail
-          mkdir dl && cd dl
-          if [ "$SOURCE" = draft ]; then
-            gh release download "smoke-v$VERSION" -R "$GITHUB_REPOSITORY" -p 'square-*' -p checksums.txt -p manifest.json
-          else
-            # The unauthenticated URLs users download from.
-            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
-            for f in square-darwin-arm64 square-darwin-x64 square-linux-x64 square-linux-arm64 \
-                square-windows-x64.exe checksums.txt manifest.json; do
-              curl -fsSLO "$base/$f"
-            done
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-assets
-          path: dl/
-          retention-days: 1
-
-  smoke:
-    needs: download
+  # After publishing: runs the binaries, npm and the Apps starter's dependencies,
+  # so it gets no token scopes. Everything it downloads is already public.
+  release:
+    if: inputs.source == 'release'
     permissions: {}
-    strategy:
+    strategy: &matrix
       fail-fast: false
       matrix:
         include:
@@ -88,20 +59,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     # The npm install can wait up to 30 minutes for npm to serve the release.
     timeout-minutes: 60
-    steps:
+    steps: &steps
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-assets
-          path: dl
-
-      - name: Verify
+      - name: Download and verify
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          cd dl
+          mkdir dl && cd dl
+          if [ "$SOURCE" = draft ]; then
+            gh release download "smoke-v$VERSION" -R "$GITHUB_REPOSITORY" -p '${{ matrix.asset }}' -p checksums.txt -p manifest.json
+          else
+            # The unauthenticated URLs users download from.
+            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+            for f in '${{ matrix.asset }}' checksums.txt manifest.json; do curl -fsSLO "$base/$f"; done
+          fi
           if command -v shasum >/dev/null; then shasum -a 256 --check --ignore-missing checksums.txt; else sha256sum --check --ignore-missing checksums.txt; fi
           chmod +x '${{ matrix.asset }}'
           echo "SQ=$PWD/${{ matrix.asset }}" >> "$GITHUB_ENV"
@@ -151,3 +126,17 @@ jobs:
           pnpm typecheck
           pnpm build
           pnpm smoke
+
+  # Before publishing, dispatched by hand. Draft releases are only visible to
+  # tokens with write access. Each job downloads straight from the draft, so the
+  # unpublished binaries never become a run artifact, which anyone can download
+  # on a public repo.
+  draft:
+    if: inputs.source == 'draft'
+    permissions:
+      contents: write
+    strategy: *matrix
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps: *steps
