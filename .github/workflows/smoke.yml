@@ -1,8 +1,8 @@
 # Clean-machine smoke for a Square CLI release on every release platform. It
 # never signs in: this repo and its Actions logs are public.
 #
-#   source=draft    binaries from a draft release (before publishing). The release
-#                   process dispatches this by hand.
+#   source=draft    binaries from the draft release smoke-v<version> (before
+#                   publishing). The release process dispatches this by hand.
 #   source=release  binaries from the public v<version> release, plus the npm
 #                   install path users follow. Publish to npm calls this after
 #                   publishing.
@@ -15,13 +15,10 @@ on:
         description: Version under test, e.g. 0.4.19
         required: true
       source:
-        description: Test a draft release, or the public release and npm
+        description: Test the draft smoke-v<version>, or the public release and npm
         type: choice
         options: [draft, release]
         default: draft
-      tag:
-        description: Draft release tag (draft only), e.g. smoke-v0.4.19
-        default: ''
   workflow_call:
     inputs:
       version:
@@ -30,26 +27,54 @@ on:
       source:
         type: string
         default: release
-      tag:
-        type: string
-        default: ''
 
 env:
   VERSION: ${{ inputs.version }}
   SOURCE: ${{ inputs.source }}
-  TAG: ${{ inputs.tag }}
 
-# Draft releases are only visible to tokens with write access. A caller must
-# grant this too: a called workflow can't hold more than its caller.
-permissions:
-  contents: write
+# Each job asks for what it needs. A caller must grant contents: write too: a
+# called workflow can't hold more than its caller.
+permissions: {}
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  download:
+    runs-on: ubuntu-latest
+    # Draft releases are only visible to tokens with write access. This job runs
+    # only gh and curl; the jobs that run the binaries and npm code get no token
+    # scopes.
+    permissions:
+      contents: write
+    steps:
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir dl && cd dl
+          if [ "$SOURCE" = draft ]; then
+            gh release download "smoke-v$VERSION" -R "$GITHUB_REPOSITORY" -p 'square-*' -p checksums.txt -p manifest.json
+          else
+            # The unauthenticated URLs users download from.
+            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+            for f in square-darwin-arm64 square-darwin-x64 square-linux-x64 square-linux-arm64 \
+                square-windows-x64.exe checksums.txt manifest.json; do
+              curl -fsSLO "$base/$f"
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dl/
+          retention-days: 1
+
   smoke:
+    needs: download
+    permissions: {}
     strategy:
       fail-fast: false
       matrix:
@@ -68,19 +93,15 @@ jobs:
         with:
           node-version: 24
 
-      - name: Download and verify
-        # Only this step gets the write token; later steps run npm packages.
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dl
+
+      - name: Verify
         run: |
           set -euxo pipefail
-          mkdir dl && cd dl
-          if [ "$SOURCE" = draft ]; then
-            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '${{ matrix.asset }}' -p checksums.txt -p manifest.json
-          else
-            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
-            for f in '${{ matrix.asset }}' checksums.txt manifest.json; do curl -fsSLO "$base/$f"; done
-          fi
+          cd dl
           if command -v shasum >/dev/null; then shasum -a 256 --check --ignore-missing checksums.txt; else sha256sum --check --ignore-missing checksums.txt; fi
           chmod +x '${{ matrix.asset }}'
           echo "SQ=$PWD/${{ matrix.asset }}" >> "$GITHUB_ENV"
@@ -121,10 +142,11 @@ jobs:
       - name: Apps starter builds
         run: |
           set -euxo pipefail
-          npm install -g pnpm@10
           mkdir proj && cd proj
           "$SQ" skills add --no-global > /dev/null
           cp -R .agents/skills/apps/starter ../app && cd ../app
+          # The pnpm the starter pins, so a new pnpm release can't fail the smoke.
+          npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.replace(/^pnpm@/, "").split("+")[0]')"
           pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm build
