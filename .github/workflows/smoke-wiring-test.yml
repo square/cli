@@ -1,0 +1,22 @@
+# Temporary: exercises smoke.yml as Publish to npm calls it. Remove before merge.
+name: Smoke wiring test
+on:
+  push:
+    branches: [yuez/release-smoke-after-publish]
+permissions:
+  contents: read
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: 0.4.19
+      source: release
+  draft:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: 0.4.19
+      source: draft
