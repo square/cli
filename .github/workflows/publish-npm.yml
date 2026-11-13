@@ -22,13 +22,15 @@ permissions:
   # gh release verify-asset reads release attestations; needed while the repo is private.
   attestations: read
 
-concurrency:
-  group: publish-npm
-  cancel-in-progress: false
-
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # One publish at a time. queue: max keeps every waiting run; the default keeps
+    # only the newest, so a later dispatch could cancel a release's publish. Only
+    # this job takes the slot, so the next publish doesn't wait for this smoke.
+    concurrency:
+      group: publish-npm
+      queue: max
     # Add required reviewers to this environment to gate each publish.
     environment: npm-publish
     outputs:
@@ -100,11 +102,13 @@ jobs:
           exit "$failed"
 
   # Tests what users get from a release: the public downloads and
-  # `npm install -g @square/cli` on every platform.
+  # `npm install -g @square/cli` on every platform. Runs for releases and for
+  # manual re-publishes (dry_run off), not for dry runs.
   smoke:
     needs: publish
-    if: github.event_name == 'release'
-    # smoke.yml asks for contents: write, which it uses only for draft releases.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    # smoke.yml's download job asks for contents: write, which it uses only for
+    # draft releases.
     permissions:
       contents: write
     uses: ./.github/workflows/smoke.yml
@@ -112,25 +116,24 @@ jobs:
       version: ${{ needs.publish.outputs.version }}
       source: release
 
-  # Announces a release's npm publish and smoke outcome through the Slack Workflow
-  # Builder webhook in SLACK_RELEASE_WEBHOOK_URL. Without the secret it only warns. Actions logs here are public: the payload
-  # carries only the version, outcome and links, and the webhook URL is never echoed.
+  # Announces the npm publish and smoke outcome of a release or a manual
+  # re-publish through the Slack Workflow Builder webhook in
+  # SLACK_RELEASE_WEBHOOK_URL. Without the secret it only warns. Actions logs here
+  # are public: the payload carries only the version, outcome and links, and the
+  # webhook URL is never echoed.
   notify:
     needs: [publish, smoke]
-    # Manual dispatches are dry runs or re-publishes of an announced release.
-    if: always() && github.event_name == 'release'
+    if: always() && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run))
     runs-on: ubuntu-latest
     permissions: {}
-    # The job holds the workflow's concurrency slot, so a stalled webhook must not
-    # block the next publish.
     timeout-minutes: 3
     steps:
       - name: Post to Slack
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
           PUBLISH: ${{ needs.publish.result }}
           SMOKE: ${{ needs.smoke.result }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_URL: ${{ github.event.release.html_url || format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, inputs.tag) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
         run: |
