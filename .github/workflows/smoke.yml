@@ -1,0 +1,131 @@
+# Clean-machine smoke for a Square CLI release on every release platform. It
+# never signs in: this repo and its Actions logs are public.
+#
+#   source=draft    binaries from a draft release (before publishing). The release
+#                   process dispatches this by hand.
+#   source=release  binaries from the public v<version> release, plus the npm
+#                   install path users follow. Publish to npm calls this after
+#                   publishing.
+name: Release smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version under test, e.g. 0.4.19
+        required: true
+      source:
+        description: Test a draft release, or the public release and npm
+        type: choice
+        options: [draft, release]
+        default: draft
+      tag:
+        description: Draft release tag (draft only), e.g. smoke-v0.4.19
+        default: ''
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      source:
+        type: string
+        default: release
+      tag:
+        type: string
+        default: ''
+
+env:
+  VERSION: ${{ inputs.version }}
+  SOURCE: ${{ inputs.source }}
+  TAG: ${{ inputs.tag }}
+
+# Draft releases are only visible to tokens with write access. A caller must
+# grant this too: a called workflow can't hold more than its caller.
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-latest, asset: square-darwin-arm64}
+          - {os: macos-15-intel, asset: square-darwin-x64}
+          - {os: ubuntu-latest, asset: square-linux-x64}
+          - {os: ubuntu-24.04-arm, asset: square-linux-arm64}
+          - {os: windows-latest, asset: square-windows-x64.exe}
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    # The npm install can wait up to 30 minutes for npm to serve the release.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download and verify
+        # Only this step gets the write token; later steps run npm packages.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir dl && cd dl
+          if [ "$SOURCE" = draft ]; then
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '${{ matrix.asset }}' -p checksums.txt -p manifest.json
+          else
+            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+            for f in '${{ matrix.asset }}' checksums.txt manifest.json; do curl -fsSLO "$base/$f"; done
+          fi
+          if command -v shasum >/dev/null; then shasum -a 256 --check --ignore-missing checksums.txt; else sha256sum --check --ignore-missing checksums.txt; fi
+          chmod +x '${{ matrix.asset }}'
+          echo "SQ=$PWD/${{ matrix.asset }}" >> "$GITHUB_ENV"
+
+      - name: Install from npm (as the README documents)
+        if: env.SOURCE == 'release'
+        # npm can take 15 minutes or more to serve every new tarball. Until then the
+        # install fails, or succeeds without the platform package so `square` can't
+        # run. Retry for 30 minutes before calling it a bug.
+        run: |
+          set -euxo pipefail
+          for attempt in $(seq 30); do
+            if npm install -g --prefer-online "@square/cli@$VERSION" && [ "$(square --version)" = "$VERSION" ]; then
+              break
+            fi
+            [ "$attempt" = 30 ] && exit 1
+            sleep 60
+          done
+          test "$(npx -y "@square/cli@$VERSION" --version)" = "$VERSION"
+
+      - name: Offline commands
+        run: |
+          set -euxo pipefail
+          test "$("$SQ" --version)" = "$VERSION"
+          "$SQ" --help > /dev/null
+          status=$("$SQ" auth status || true)
+          grep -q '"signedIn": false' <<<"$status"
+          want=$(node -p 'require("./dl/manifest.json").commandCount')
+          got=$("$SQ" --llms --format json | node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8")).commands.length)')
+          test "$got" = "$want"
+          "$SQ" catalog item list --schema > /dev/null
+          "$SQ" completions bash > /dev/null
+          "$SQ" skills add --schema > /dev/null
+          test ! -e "$HOME/.agents"
+          "$SQ" skills add > /dev/null
+          "$SQ" skills list | tail -1 | grep -E '^([0-9]+) skills \(\1 installed\)$'
+
+      - name: Apps starter builds
+        run: |
+          set -euxo pipefail
+          npm install -g pnpm@10
+          mkdir proj && cd proj
+          "$SQ" skills add --no-global > /dev/null
+          cp -R .agents/skills/apps/starter ../app && cd ../app
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm build
+          pnpm smoke
